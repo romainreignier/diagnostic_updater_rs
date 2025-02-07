@@ -149,12 +149,18 @@ impl UpdaterPrivate {
     }
 }
 
+/// Collects the diagnostic messages and to publishes them.
 pub struct Updater {
     private: Arc<Mutex<UpdaterPrivate>>,
 }
 
 impl Updater {
-    /// Creates an Updater object
+    /// Creates an [Updater] object
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - A rclrs node used for the publisher and the clock.
+    /// * `period` - Period of publication of the diagnostics.
     ///
     /// # Examples
     ///
@@ -179,19 +185,23 @@ impl Updater {
         s
     }
 
+    /// Returns the interval between updates.
     pub fn get_period(&self) -> Duration {
         self.private.lock().unwrap().period
     }
 
+    /// Sets the period of publication and restart the internal periodic thread.
     pub fn set_period(&mut self, period: Duration) {
         self.private.lock().unwrap().period = period;
         self.reset_timer();
     }
 
+    /// Sets the hardware id string
     pub fn set_hardware_id<S: Into<String>>(&mut self, hwid: S) {
         self.private.lock().unwrap().hardware_id = Some(hwid.into())
     }
 
+    /// Adds a closure embodied by a name that will be called to fill a [`DiagnosticStatusWrapper`].
     pub fn add<S, F>(&mut self, name: S, cb: F)
     where
         S: Into<String>,
@@ -200,7 +210,7 @@ impl Updater {
         self.private.lock().unwrap().add(name, cb);
     }
 
-    /// Output a message on all the known DiagnosticStatus.
+    /// Outputs a message on all the known DiagnosticStatus.
     ///
     /// Useful if something drastic is happening such as shutdown or a self-test.
     pub fn broadcast(&self, level: u8, message: &str) {

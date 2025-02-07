@@ -1,8 +1,12 @@
 use diagnostic_msgs::msg::{DiagnosticStatus, KeyValue};
 use std::fmt;
 
+/// A wrapper on top [`diagnostic_msgs::msg::DiagnosticStatus`](https://docs.ros.org/en/rolling/p/diagnostic_msgs/interfaces/msg/DiagnosticStatus.html)
+/// to provide helper functions such as [`summary`](DiagnosticStatusWrapper::summary),
+/// [`add`](DiagnosticStatusWrapper::add) and [`merge_summary`](DiagnosticStatusWrapper::merge_summary).
 #[derive(Clone, Default)]
 pub struct DiagnosticStatusWrapper {
+    /// Internal DiagnosticStatus message
     pub status: DiagnosticStatus,
 }
 
@@ -17,8 +21,7 @@ impl DiagnosticStatusWrapper {
     /// # Examples
     ///
     /// ```
-    /// use diagnostic_updater_rs::DiagnosticStatusWrapper;
-    ///
+    /// # use diagnostic_updater_rs::DiagnosticStatusWrapper;
     /// let mut w = DiagnosticStatusWrapper::default();
     /// w.summary(0, "test");
     /// assert_eq!(w.status.level, 0);
@@ -29,14 +32,23 @@ impl DiagnosticStatusWrapper {
         self.status.message = message.into();
     }
 
-    /// Internal function to use formated arguments
-    /// to be used by the `summary!()` macro
+    /// Alternative version of [`summary`](DiagnosticStatusWrapper::summary) function to use formated arguments
+    /// to be used by the [`summary`](crate::summary!) macro.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use diagnostic_updater_rs::{summary, DiagnosticStatusWrapper};
+    /// let mut w = DiagnosticStatusWrapper::default();
+    /// let a = 1;
+    /// w.summary_from_args(0, format_args!("test {}", a));
+    /// assert_eq!(w.status.message, "test 1");
+    /// ``````
     pub fn summary_from_args(&mut self, level: u8, args: fmt::Arguments<'_>) {
         self.status.level = level;
         self.status.message = format!("{}", args);
     }
 
-    ///
     /// Merges a level and message with the existing ones.
     ///
     /// It is sometimes useful to merge two DiagnosticStatus messages. In that
@@ -69,31 +81,36 @@ impl DiagnosticStatusWrapper {
         }
     }
 
-    /// Version of `merge_summary` that merges in the summary from
+    /// Version of [`merge_summary`](DiagnosticStatusWrapper::merge_summary) that merges in the summary from
     /// another DiagnosticStatus.
     pub fn merge_summary_from_status(&mut self, src: &DiagnosticStatus) {
         self.merge_summary(src.level, &src.message);
     }
 
-    /// clears the summary, setting the level to zero and the message to `""``.
+    /// Version of [`merge_summary`](DiagnosticStatusWrapper::merge_summary) that merges in the summary from
+    /// another DiagnosticStatusWrapper.
+    pub fn merge_summary_from_wrapper(&mut self, src: &Self) {
+        self.merge_summary(src.status.level, &src.status.message);
+    }
+
+    /// Clears the summary, setting the level to zero and the message to `""``.
     pub fn clear_summary(&mut self) {
         self.summary(0, "");
     }
 
-    /// Clear the key-value pairs.
+    /// Clears the key-value pairs.
     ///
     /// The values vector containing the key-value pairs is cleared.
     pub fn clear(&mut self) {
         self.status.values.clear();
     }
 
-    /// Add a key-value pair.
+    /// Adds a key-value pair.
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```
-    /// use diagnostic_updater_rs::DiagnosticStatusWrapper;
-    ///
+    /// # use diagnostic_updater_rs::DiagnosticStatusWrapper;
     /// let mut w = DiagnosticStatusWrapper::default();
     /// w.add("key1", "value1");
     /// assert_eq!(w.status.values.len(), 1);
@@ -106,15 +123,12 @@ impl DiagnosticStatusWrapper {
             value: value.to_string(),
         })
     }
-
-    pub fn add_from_args<S: Into<String>>(&mut self, key: S, args: fmt::Arguments<'_>) {
-        self.add(key, format!("{}", args))
-    }
 }
 
-/// Macro to use formated arguments for the `summary`method`
+/// Macro to use formated arguments for the [`DiagnosticStatusWrapper::summary()`] method
 ///
 /// # Example
+///
 /// ```
 /// use diagnostic_updater_rs::{summary, DiagnosticStatusWrapper};
 ///
@@ -130,9 +144,10 @@ macro_rules! summary {
     }}
 }
 
-/// Macro to use formated arguments for the `add`` method
+/// Macro to use formated arguments for the [`DiagnosticStatusWrapper::add()`] method
 ///
-/// # Examples
+/// # Example
+///
 /// ```
 /// use diagnostic_updater_rs::{add, DiagnosticStatusWrapper};
 ///
@@ -146,6 +161,6 @@ macro_rules! summary {
 #[macro_export]
 macro_rules! add {
     ($wrapper:expr, $key:expr, $($arg:tt)*) => {{
-        $wrapper.add_from_args($key, format_args!($($arg)*))
+        $wrapper.add($key, format_args!($($arg)*))
     }}
 }
