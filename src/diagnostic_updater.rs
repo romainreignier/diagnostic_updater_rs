@@ -34,98 +34,47 @@ impl DiagnosticTask {
     }
 }
 
-pub struct Updater {
+struct UpdaterPrivate {
     node: Arc<Node>,
+    tasks: Vec<DiagnosticTask>,
+    publisher: Arc<Publisher<DiagnosticArray>>,
     period: Duration,
     hardware_id: Option<String>,
-    publisher: Arc<Publisher<DiagnosticArray>>,
-    tasks: Mutex<Vec<DiagnosticTask>>,
     warn_nohwid_done: bool,
 }
 
-impl Updater {
-    /// Creates an Updater object
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use diagnostic_msgs::msg::DiagnosticStatus;
-    /// use diagnostic_updater_rs::Updater;
-    /// use std::time::Duration;
-    ///
-    /// let context = rclrs::Context::new(std::env::args()).unwrap();
-    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
-    /// let updater = Updater::new(node.clone(), Duration::from_secs(1));
-    /// (*updater.lock().unwrap()).set_hardware_id("none");
-    /// (*updater.lock().unwrap()).add("connection", |mut stat| {
-    ///     stat.summary(DiagnosticStatus::OK, "");
-    /// });
-    /// Updater::start(updater.clone());
-    /// ```
-    pub fn new(node: Arc<Node>, period: Duration) -> Arc<Mutex<Self>> {
+impl UpdaterPrivate {
+    fn new(node: Arc<Node>, period: Duration) -> Self {
         let publisher = node
             .create_publisher("/diagnostics", QOS_PROFILE_DEFAULT)
             .unwrap();
-        Arc::new(Mutex::new(Self {
+        Self {
             node,
             period,
             hardware_id: None,
             publisher,
-            tasks: Mutex::new(Vec::new()),
+            tasks: Vec::new(),
             warn_nohwid_done: false,
-        }))
+        }
     }
 
-    pub fn get_period(&self) -> Duration {
-        self.period
-    }
-
-    pub fn set_period(&mut self, period: Duration) {
-        self.period = period
-    }
-
-    pub fn set_hardware_id<S: Into<String>>(&mut self, hwid: S) {
-        self.hardware_id = Some(hwid.into())
-    }
-
-    pub fn add<S, F>(&mut self, name: S, cb: F)
+    fn add<S, F>(&mut self, name: S, cb: F)
     where
         S: Into<String>,
         F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
     {
         let task = DiagnosticTask::new(name, cb);
         self.added_task_callback(&task);
-        self.tasks.lock().unwrap().push(task);
+        self.tasks.push(task);
     }
 
-    /// Output a message on all the known DiagnosticStatus.
-    ///
-    /// Useful if something drastic is happening such as shutdown or a self-test.
-    pub fn broadcast(&self, level: u8, message: &str) {
-        let mut status_vec = Vec::new();
-        for task in self.tasks.lock().unwrap().iter() {
-            let mut w = DiagnosticStatusWrapper::default();
-            w.status.name = task.get_name();
-            w.summary(level, message);
-            status_vec.push(w);
-        }
-        self.publish(status_vec);
-    }
-
-    /// Remove a task based on its name.
-    pub fn remove_by_name(&mut self, name: &str) -> bool {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(pos) = tasks.iter().position(|item| item.name == name) {
-            tasks.remove(pos);
+    fn remove_by_name(&mut self, name: &str) -> bool {
+        if let Some(pos) = self.tasks.iter().position(|item| item.name == name) {
+            self.tasks.remove(pos);
             true
         } else {
             false
         }
-    }
-
-    /// Forces to send out an update for all known DiagnosticStatus.
-    pub fn force_update(&mut self) {
-        self.update()
     }
 
     fn added_task_callback(&self, task: &DiagnosticTask) {
@@ -159,11 +108,22 @@ impl Updater {
         self.publisher.publish(msg).unwrap();
     }
 
+    fn broadcast(&self, level: u8, message: &str) {
+        let mut status_vec = Vec::new();
+        for task in self.tasks.iter() {
+            let mut w = DiagnosticStatusWrapper::default();
+            w.status.name = task.get_name();
+            w.summary(level, message);
+            status_vec.push(w);
+        }
+        self.publish(status_vec);
+    }
+
     /// Causes the diagnostics to update if the inter-update interval has been exceeded.
     fn update(&mut self) {
         let mut warn_nohwid = self.hardware_id.is_none();
         let mut status_vec = Vec::new();
-        for task in self.tasks.lock().unwrap().iter() {
+        for task in self.tasks.iter() {
             let mut w = DiagnosticStatusWrapper::default();
             w.status.name = task.get_name();
             w.status.level = 2;
@@ -185,20 +145,89 @@ impl Updater {
             self.warn_nohwid_done = true;
             rclrs::log_warn!(self.node.logger(), "diagnostic_updater: No HW_ID was set. This is probably a bug. Please report it. For devices that do not have a HW_ID, set this value to 'none'. This warning only occurs once all diagnostics are OK. It is okay to wait until the device is open before calling setHardwareID.");
         }
-
         self.publish(status_vec);
     }
+}
 
-    pub fn start(this: Arc<Mutex<Self>>) {
+pub struct Updater {
+    private: Arc<Mutex<UpdaterPrivate>>,
+}
+
+impl Updater {
+    /// Creates an Updater object
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use diagnostic_msgs::msg::DiagnosticStatus;
+    /// use diagnostic_updater_rs::Updater;
+    /// use std::time::Duration;
+    ///
+    /// let context = rclrs::Context::new(std::env::args()).unwrap();
+    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut updater = Updater::new(node.clone(), Duration::from_secs(1));
+    /// updater.set_hardware_id("none");
+    /// updater.add("connection", |mut stat| {
+    ///     stat.summary(DiagnosticStatus::OK, "");
+    /// });
+    /// ```
+    pub fn new(node: Arc<Node>, period: Duration) -> Self {
+        let mut s = Self {
+            private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
+        };
+        s.reset_timer();
+        s
+    }
+
+    pub fn get_period(&self) -> Duration {
+        self.private.lock().unwrap().period
+    }
+
+    pub fn set_period(&mut self, period: Duration) {
+        self.private.lock().unwrap().period = period;
+        self.reset_timer();
+    }
+
+    pub fn set_hardware_id<S: Into<String>>(&mut self, hwid: S) {
+        self.private.lock().unwrap().hardware_id = Some(hwid.into())
+    }
+
+    pub fn add<S, F>(&mut self, name: S, cb: F)
+    where
+        S: Into<String>,
+        F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
+    {
+        self.private.lock().unwrap().add(name, cb);
+    }
+
+    /// Output a message on all the known DiagnosticStatus.
+    ///
+    /// Useful if something drastic is happening such as shutdown or a self-test.
+    pub fn broadcast(&self, level: u8, message: &str) {
+        self.private.lock().unwrap().broadcast(level, message)
+    }
+
+    /// Remove a task based on its name.
+    pub fn remove_by_name(&mut self, name: &str) -> bool {
+        self.private.lock().unwrap().remove_by_name(name)
+    }
+
+    /// Forces to send out an update for all known DiagnosticStatus.
+    pub fn force_update(&mut self) {
+        self.private.lock().unwrap().update()
+    }
+
+    fn reset_timer(&mut self) {
+        let private = self.private.clone();
         thread::spawn(move || {
-            let mut next_update = Instant::now() + this.lock().unwrap().period;
+            let mut next_update = Instant::now() + private.lock().unwrap().period;
             loop {
                 if next_update > Instant::now() {
                     std::thread::sleep(next_update - Instant::now());
                 }
-                let mut lock = this.lock().unwrap();
-                next_update += lock.period;
-                lock.update();
+                let mut private = private.lock().unwrap();
+                next_update += private.period;
+                private.update();
             }
         });
     }
@@ -219,9 +248,9 @@ mod tests {
     fn can_add_a_task() {
         let context = rclrs::Context::new(std::env::args()).unwrap();
         let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
-        let updater = Updater::new(node, Duration::from_secs(1));
-        updater.lock().unwrap().add("test", |_| {});
-        assert_eq!(updater.lock().unwrap().tasks.lock().unwrap().len(), 1);
+        let mut updater = Updater::new(node, Duration::from_secs(1));
+        updater.add("test", |_| {});
+        assert_eq!(updater.private.lock().unwrap().tasks.len(), 1);
     }
 
     #[test]
@@ -229,10 +258,10 @@ mod tests {
     fn can_remove_a_task_by_name() {
         let context = rclrs::Context::new(std::env::args()).unwrap();
         let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
-        let updater = Updater::new(node, Duration::from_secs(1));
-        assert!(!updater.lock().unwrap().remove_by_name("test"));
-        updater.lock().unwrap().add("test", |_| {});
-        assert!(updater.lock().unwrap().remove_by_name("test"));
+        let mut updater = Updater::new(node, Duration::from_secs(1));
+        assert!(!updater.remove_by_name("test"));
+        updater.add("test", |_| {});
+        assert!(updater.remove_by_name("test"));
     }
 
     #[test]
@@ -253,8 +282,8 @@ mod tests {
                 },
             )
             .unwrap();
-        let updater = Updater::new(node.clone(), Duration::from_secs(1));
-        updater.lock().unwrap().add("test", |_| {});
+        let mut updater = Updater::new(node.clone(), Duration::from_secs(1));
+        updater.add("test", |_| {});
         rclrs::spin_once(node, None).unwrap();
         assert_eq!(*msg_counter.lock().unwrap(), 1);
     }
@@ -277,8 +306,8 @@ mod tests {
             )
             .unwrap();
         let period = Duration::from_millis(10);
-        let updater = Updater::new(node.clone(), period);
-        updater.lock().unwrap().add("test", |_| {});
+        let mut updater = Updater::new(node.clone(), period);
+        updater.add("test", |_| {});
         rclrs::spin_once(node.clone(), None).unwrap();
         assert_eq!((*msgs.lock().unwrap()).len(), 1);
         assert_eq!((*msgs.lock().unwrap())[0].status[0].level, 0);
@@ -286,7 +315,6 @@ mod tests {
             (*msgs.lock().unwrap())[0].status[0].message,
             "Node starting up"
         );
-        Updater::start(updater.clone());
         for i in 0..3 {
             rclrs::spin_once(node.clone(), None).unwrap();
             assert!((*msgs.lock().unwrap()).len() >= i + 2);
