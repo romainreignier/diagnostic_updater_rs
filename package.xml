@@ -1,0 +1,14 @@
+<package format="3">
+    <name>diagnostic_updater_rs</name>
+    <version>0.1.0</version>
+    <description>A ROS 2 diagnostic_updater library in Rust</description>
+    <maintainer email="romain.reignier@exail.com">Romain Reignier</maintainer>
+    <license>Apache License 2.0</license>
+
+    <depend>rclrs</depend>
+    <depend>diagnostic_msgs</depend>
+
+    <export>
+        <build_type>ament_cargo</build_type>
+    </export>
+</package>

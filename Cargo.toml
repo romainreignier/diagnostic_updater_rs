@@ -1,0 +1,17 @@
+[package]
+name = "diagnostic_updater_rs"
+version = "0.1.0"
+authors = ["Romain Reignier <romain.reignier@exail.com>"]
+license = "Apache-2.0"
+description = "A ROS 2 diagnostic_updater library in Rust"
+edition = "2021"
+
+[dependencies]
+builtin_interfaces = "*"
+diagnostic_msgs = "*"
+rclrs = "*"
+std_msgs = "*"
+
+[dev-dependencies]
+# to run the test sequentially to avoid conflicts on /diagnostics topic
+serial_test = "3.2"
