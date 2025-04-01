@@ -1,8 +1,9 @@
 use builtin_interfaces::msg;
 use diagnostic_msgs::msg::DiagnosticArray;
 use rclrs::{Node, Publisher, ToLogParams, QOS_PROFILE_DEFAULT};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std_msgs::msg::Header;
 
@@ -152,6 +153,8 @@ impl UpdaterPrivate {
 /// Collects the diagnostic messages and to publishes them.
 pub struct Updater {
     private: Arc<Mutex<UpdaterPrivate>>,
+    timer_thread: Option<JoinHandle<()>>,
+    timer_running: Arc<AtomicBool>,
 }
 
 impl Updater {
@@ -180,6 +183,8 @@ impl Updater {
     pub fn new(node: Arc<Node>, period: Duration) -> Self {
         let mut s = Self {
             private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
+            timer_thread: None,
+            timer_running: Arc::new(AtomicBool::new(false)),
         };
         s.reset_timer();
         s
@@ -228,10 +233,17 @@ impl Updater {
     }
 
     fn reset_timer(&mut self) {
+        if let Some(thread) = self.timer_thread.take() {
+            self.timer_running.store(false, Ordering::Relaxed);
+            thread.join().unwrap();
+        }
         let private = self.private.clone();
-        thread::spawn(move || {
+
+        self.timer_running.store(true, Ordering::Relaxed);
+        let thread_timer_running = Arc::clone(&self.timer_running);
+        self.timer_thread = Some(thread::spawn(move || {
             let mut next_update = Instant::now() + private.lock().unwrap().period;
-            loop {
+            while thread_timer_running.load(Ordering::Relaxed) {
                 if next_update > Instant::now() {
                     std::thread::sleep(next_update - Instant::now());
                 }
@@ -239,7 +251,8 @@ impl Updater {
                 next_update += private.period;
                 private.update();
             }
-        });
+            println!("End of timer thread");
+        }));
     }
 }
 
@@ -334,5 +347,36 @@ mod tests {
                 "No message was set"
             );
         }
+    }
+
+    #[test]
+    #[serial]
+    fn can_change_period() {
+        // Create ROS Node
+        let context = rclrs::Context::new(std::env::args()).unwrap();
+        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+
+        // Create diag subscriber to check the messages
+        let msgs = Arc::new(Mutex::new(Vec::new()));
+        let msgs_cb = msgs.clone();
+        let _subscriber = node
+            .create_subscription(
+                "/diagnostics",
+                QOS_PROFILE_DEFAULT,
+                move |msg: DiagnosticArray| {
+                    (*msgs_cb.lock().unwrap()).push(msg.clone());
+                },
+            )
+            .unwrap();
+
+        // Create the diagnostic updater
+        let period = Duration::from_millis(10);
+        let mut updater = Updater::new(node.clone(), period);
+        updater.set_period(Duration::from_millis(50));
+        updater.add("test", |_| {});
+
+        // Startup message received
+        rclrs::spin_once(node.clone(), None).unwrap();
+        assert_eq!((*msgs.lock().unwrap()).len(), 1);
     }
 }
