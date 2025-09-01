@@ -159,6 +159,42 @@ pub struct Updater {
 
 impl Updater {
     /// Creates an [Updater] object
+    /// The publication rate is determined by the "~/diagnostic_updater.period" ros2 parameter.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - A rclrs node used for the publisher and the clock.
+    ///
+    /// # Errors
+    ///
+    /// * Returns an error if the internal parameter declaration fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use diagnostic_msgs::msg::DiagnosticStatus;
+    /// use diagnostic_updater_rs::Updater;
+    /// use std::time::Duration;
+    ///
+    /// let context = rclrs::Context::new(std::env::args()).unwrap();
+    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut updater = Updater::new(node.clone()).unwrap();
+    /// updater.set_hardware_id("none");
+    /// updater.add("connection", |mut stat| {
+    ///     stat.summary(DiagnosticStatus::OK, "");
+    /// });
+    /// ```
+    pub fn new(node: Arc<Node>) -> Result<Self, rclrs::DeclarationError> {
+        let period = node
+            .declare_parameter("diagnostic_updater.period")
+            .default(1.0)
+            .mandatory()?;
+        let period = Duration::from_secs_f64(period.get());
+        Ok(Self::with_period(node, period))
+    }
+
+    /// Creates an [Updater] object with a specified period.
+    /// This version does not use a ROS parameter to set the period.
     ///
     /// # Arguments
     ///
@@ -174,13 +210,13 @@ impl Updater {
     ///
     /// let context = rclrs::Context::new(std::env::args()).unwrap();
     /// let node = rclrs::Node::new(&context, "my_node").unwrap();
-    /// let mut updater = Updater::new(node.clone(), Duration::from_secs(1));
+    /// let mut updater = Updater::with_period(node.clone(), Duration::from_secs(1));
     /// updater.set_hardware_id("none");
     /// updater.add("connection", |mut stat| {
     ///     stat.summary(DiagnosticStatus::OK, "");
     /// });
     /// ```
-    pub fn new(node: Arc<Node>, period: Duration) -> Self {
+    pub fn with_period(node: Arc<Node>, period: Duration) -> Self {
         let mut s = Self {
             private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
             timer_thread: None,
@@ -271,9 +307,42 @@ mod tests {
     fn can_add_a_task() {
         let context = rclrs::Context::new(std::env::args()).unwrap();
         let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
-        let mut updater = Updater::new(node, Duration::from_secs(1));
+        let mut updater = Updater::with_period(node, Duration::from_secs(1));
         updater.add("test", |_| {});
         assert_eq!(updater.private.lock().unwrap().tasks.len(), 1);
+    }
+
+    #[test]
+    #[serial]
+    fn can_create_with_default_period() {
+        let context = rclrs::Context::new(std::env::args()).unwrap();
+        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let updater = Updater::new(node).unwrap();
+        assert_eq!(updater.get_period(), Duration::from_secs(1));
+    }
+
+    #[test]
+    #[serial]
+    fn can_create_with_period_argument() {
+        let context = rclrs::Context::new(std::env::args()).unwrap();
+        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let updater = Updater::with_period(node, Duration::from_secs(2));
+        assert_eq!(updater.get_period(), Duration::from_secs(2));
+    }
+
+    #[test]
+    #[serial]
+    fn can_create_with_period_set_by_ros_parameter() {
+        let context = rclrs::Context::new(std::env::args()).unwrap();
+        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+
+        // Set the parameter to change the period
+        node.use_undeclared_parameters()
+            .set("diagnostic_updater.period", 3.0)
+            .unwrap();
+
+        let updater = Updater::new(node).unwrap();
+        assert_eq!(updater.get_period(), Duration::from_secs(3));
     }
 
     #[test]
@@ -281,7 +350,7 @@ mod tests {
     fn can_remove_a_task_by_name() {
         let context = rclrs::Context::new(std::env::args()).unwrap();
         let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
-        let mut updater = Updater::new(node, Duration::from_secs(1));
+        let mut updater = Updater::with_period(node, Duration::from_secs(1));
         assert!(!updater.remove_by_name("test"));
         updater.add("test", |_| {});
         assert!(updater.remove_by_name("test"));
@@ -305,7 +374,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let mut updater = Updater::new(node.clone(), Duration::from_secs(1));
+        let mut updater = Updater::with_period(node.clone(), Duration::from_secs(1));
         updater.add("test", |_| {});
         rclrs::spin_once(node, None).unwrap();
         assert_eq!(*msg_counter.lock().unwrap(), 1);
@@ -329,7 +398,7 @@ mod tests {
             )
             .unwrap();
         let period = Duration::from_millis(10);
-        let mut updater = Updater::new(node.clone(), period);
+        let mut updater = Updater::with_period(node.clone(), period);
         updater.add("test", |_| {});
         rclrs::spin_once(node.clone(), None).unwrap();
         assert_eq!((*msgs.lock().unwrap()).len(), 1);
@@ -371,7 +440,7 @@ mod tests {
 
         // Create the diagnostic updater
         let period = Duration::from_millis(10);
-        let mut updater = Updater::new(node.clone(), period);
+        let mut updater = Updater::with_period(node.clone(), period);
         updater.set_period(Duration::from_millis(50));
         updater.add("test", |_| {});
 

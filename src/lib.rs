@@ -2,7 +2,8 @@
 //!
 //! <div class="warning">
 //!
-//! While Timers are not implemented in rclrs, a dedicated thread is used to update the diagnostics and publish them.
+//! While Timers are not implemented in rclrs, see [this PR]()https://github.com/ros2-rust/ros2_rust/pull/480,
+//! a dedicated thread is used to update the diagnostics and publish them.
 //!
 //! </div>
 

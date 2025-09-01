@@ -11,7 +11,7 @@ use std::time::Duration;
 
 let context = rclrs::Context::new(std::env::args()).unwrap();
 let node = rclrs::Node::new(&context, "my_node").unwrap();
-let mut updater = Updater::new(node.clone(), Duration::from_secs(1));
+let mut updater = Updater::new(node.clone()).unwrap();
 updater.set_hardware_id("none");
 updater.add("connection", |mut stat| {
     stat.summary(DiagnosticStatus::OK, "");
