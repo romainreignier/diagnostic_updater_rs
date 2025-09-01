@@ -68,7 +68,7 @@ impl DiagnosticStatusWrapper {
     /// * `level` - Numerical level to of the merged-in summary.
     /// * `message` - Descriptive status message for the merged-in summary.
     pub fn merge_summary<S: Into<String>>(&mut self, level: u8, message: S) {
-        if level > 0 && self.status.level > 0 {
+        if (level > 0) == (self.status.level > 0) {
             if !self.status.message.is_empty() {
                 self.status.message.push_str("; ");
                 self.status.message.push_str(&message.into());
