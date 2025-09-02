@@ -1,4 +1,4 @@
-use rclrs::{log_debug, RclrsError, Time, ToLogParams};
+use rclrs::{log_debug, RclrsError, Time};
 use std::sync::{Arc, Mutex};
 
 use crate::diagnostic_status_wrapper::DiagnosticStatusWrapper;

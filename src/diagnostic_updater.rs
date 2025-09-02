@@ -1,6 +1,6 @@
 use builtin_interfaces::msg;
 use diagnostic_msgs::msg::DiagnosticArray;
-use rclrs::{Node, Publisher, ToLogParams, QOS_PROFILE_DEFAULT};
+use rclrs::{IntoPrimitiveOptions, Node, Publisher};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -120,19 +120,17 @@ impl DiagnosticTask for DiagnosticTaskInternal {
 }
 
 struct UpdaterPrivate {
-    node: Arc<Node>,
+    node: Node,
     tasks: Vec<DiagnosticTaskInternal>,
-    publisher: Arc<Publisher<DiagnosticArray>>,
+    publisher: Publisher<DiagnosticArray>,
     period: Duration,
     hardware_id: Option<String>,
     warn_nohwid_done: bool,
 }
 
 impl UpdaterPrivate {
-    fn new(node: Arc<Node>, period: Duration) -> Self {
-        let publisher = node
-            .create_publisher("/diagnostics", QOS_PROFILE_DEFAULT)
-            .unwrap();
+    fn new(node: Node, period: Duration) -> Self {
+        let publisher = node.create_publisher("/diagnostics".keep_last(1)).unwrap();
         Self {
             node,
             period,
@@ -277,15 +275,15 @@ impl Updater {
     /// use diagnostic_updater_rs::Updater;
     /// use std::time::Duration;
     ///
-    /// let context = rclrs::Context::new(std::env::args()).unwrap();
-    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut executor = Context::default().create_basic_executor();
+    /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// updater.set_hardware_id("none");
     /// updater.add("connection", |mut stat| {
     ///     stat.summary(DiagnosticStatus::OK, "");
     /// });
     /// ```
-    pub fn new(node: Arc<Node>) -> Result<Self, rclrs::DeclarationError> {
+    pub fn new(node: Node) -> Result<Self, rclrs::DeclarationError> {
         let period = node
             .declare_parameter("diagnostic_updater.period")
             .default(1.0)
@@ -309,15 +307,15 @@ impl Updater {
     /// use diagnostic_updater_rs::Updater;
     /// use std::time::Duration;
     ///
-    /// let context = rclrs::Context::new(std::env::args()).unwrap();
-    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut executor = Context::default().create_basic_executor();
+    /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::with_period(node.clone(), Duration::from_secs(1));
     /// updater.set_hardware_id("none");
     /// updater.add("connection", |mut stat| {
     ///     stat.summary(DiagnosticStatus::OK, "");
     /// });
     /// ```
-    pub fn with_period(node: Arc<Node>, period: Duration) -> Self {
+    pub fn with_period(node: Node, period: Duration) -> Self {
         let mut s = Self {
             private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
             timer_thread: None,
@@ -346,8 +344,8 @@ impl Updater {
     /// # Examples
     /// ```
     /// use diagnostic_updater_rs::Updater;
-    /// let context = rclrs::Context::new(std::env::args()).unwrap();
-    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut executor = Context::default().create_basic_executor();
+    /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// updater.set_hardware_id("none");
     /// ```
@@ -364,8 +362,8 @@ impl Updater {
     /// # Examples
     /// ```
     /// use diagnostic_updater_rs::{set_hardware_id, Updater};
-    /// let context = rclrs::Context::new(std::env::args()).unwrap();
-    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut executor = Context::default().create_basic_executor();
+    /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// let device_id = 42;
     /// updater.set_hardware_id_from_args(format_args!("device_{}", device_id));
@@ -438,8 +436,8 @@ impl Updater {
 /// # Examples
 /// ```
 /// use diagnostic_updater_rs::{set_hardware_id, Updater};
-/// let context = rclrs::Context::new(std::env::args()).unwrap();
-/// let node = rclrs::Node::new(&context, "my_node").unwrap();
+/// let mut executor = Context::default().create_basic_executor();
+/// let node = executor.create_node("my_node").unwrap();
 /// let mut updater = Updater::new(node.clone()).unwrap();
 /// let device_id = 42;
 /// set_hardware_id!(updater, "device_{}", device_id);
@@ -453,6 +451,7 @@ macro_rules! set_hardware_id {
 
 #[cfg(test)]
 mod tests {
+    use rclrs::*;
     use serial_test::serial;
     use std::time::Duration;
 
@@ -464,8 +463,8 @@ mod tests {
     #[test]
     #[serial]
     fn can_add_a_task() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
         let mut updater = Updater::with_period(node, Duration::from_secs(1));
         updater.add("test", |_| {});
         assert_eq!(updater.private.lock().unwrap().tasks.len(), 1);
@@ -474,8 +473,8 @@ mod tests {
     #[test]
     #[serial]
     fn can_create_with_default_period() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
         let updater = Updater::new(node).unwrap();
         assert_eq!(updater.get_period(), Duration::from_secs(1));
     }
@@ -483,8 +482,8 @@ mod tests {
     #[test]
     #[serial]
     fn can_create_with_period_argument() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
         let updater = Updater::with_period(node, Duration::from_secs(2));
         assert_eq!(updater.get_period(), Duration::from_secs(2));
     }
@@ -492,8 +491,8 @@ mod tests {
     #[test]
     #[serial]
     fn can_create_with_period_set_by_ros_parameter() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
 
         // Set the parameter to change the period
         node.use_undeclared_parameters()
@@ -507,8 +506,8 @@ mod tests {
     #[test]
     #[serial]
     fn can_remove_a_task_by_name() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
         let mut updater = Updater::with_period(node, Duration::from_secs(1));
         assert!(!updater.remove_by_name("test"));
         updater.add("test", |_| {});
@@ -518,48 +517,40 @@ mod tests {
     #[test]
     #[serial]
     fn can_publish_diag_msg_on_start() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let mut executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
 
         let msg_counter = Arc::new(Mutex::new(0));
         let counter_cb = msg_counter.clone();
         let _subscriber = node
-            .create_subscription(
-                "/diagnostics",
-                QOS_PROFILE_DEFAULT,
-                move |_msg: DiagnosticArray| {
-                    let mut counter = counter_cb.lock().unwrap();
-                    *counter += 1;
-                },
-            )
+            .create_subscription("/diagnostics", move |_msg: DiagnosticArray| {
+                let mut counter = counter_cb.lock().unwrap();
+                *counter += 1;
+            })
             .unwrap();
         let mut updater = Updater::with_period(node.clone(), Duration::from_secs(1));
         updater.add("test", |_| {});
-        rclrs::spin_once(node, None).unwrap();
+        executor.spin(SpinOptions::spin_once());
         assert_eq!(*msg_counter.lock().unwrap(), 1);
     }
 
     #[test]
     #[serial]
     fn can_publish_diag_msgs() {
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let mut executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
 
         let msgs = Arc::new(Mutex::new(Vec::new()));
         let msgs_cb = msgs.clone();
         let _subscriber = node
-            .create_subscription(
-                "/diagnostics",
-                QOS_PROFILE_DEFAULT,
-                move |msg: DiagnosticArray| {
-                    (*msgs_cb.lock().unwrap()).push(msg.clone());
-                },
-            )
+            .create_subscription("/diagnostics", move |msg: DiagnosticArray| {
+                (*msgs_cb.lock().unwrap()).push(msg.clone());
+            })
             .unwrap();
         let period = Duration::from_millis(10);
         let mut updater = Updater::with_period(node.clone(), period);
         updater.add("test", |_| {});
-        rclrs::spin_once(node.clone(), None).unwrap();
+        executor.spin(SpinOptions::spin_once());
         assert_eq!((*msgs.lock().unwrap()).len(), 1);
         assert_eq!((*msgs.lock().unwrap())[0].status[0].level, 0);
         assert_eq!(
@@ -567,7 +558,7 @@ mod tests {
             "Node starting up"
         );
         for i in 0..3 {
-            rclrs::spin_once(node.clone(), None).unwrap();
+            executor.spin(SpinOptions::spin_once());
             assert!((*msgs.lock().unwrap()).len() >= i + 2);
             assert_eq!((*msgs.lock().unwrap())[i + 1].status[0].level, 2);
             assert_eq!(
@@ -581,20 +572,16 @@ mod tests {
     #[serial]
     fn can_change_period() {
         // Create ROS Node
-        let context = rclrs::Context::new(std::env::args()).unwrap();
-        let node = rclrs::Node::new(&context, "diagnosed_node").unwrap();
+        let mut executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
 
         // Create diag subscriber to check the messages
         let msgs = Arc::new(Mutex::new(Vec::new()));
         let msgs_cb = msgs.clone();
         let _subscriber = node
-            .create_subscription(
-                "/diagnostics",
-                QOS_PROFILE_DEFAULT,
-                move |msg: DiagnosticArray| {
-                    (*msgs_cb.lock().unwrap()).push(msg.clone());
-                },
-            )
+            .create_subscription("/diagnostics", move |msg: DiagnosticArray| {
+                (*msgs_cb.lock().unwrap()).push(msg.clone());
+            })
             .unwrap();
 
         // Create the diagnostic updater
@@ -604,7 +591,7 @@ mod tests {
         updater.add("test", |_| {});
 
         // Startup message received
-        rclrs::spin_once(node.clone(), None).unwrap();
+        executor.spin(SpinOptions::spin_once());
         assert_eq!((*msgs.lock().unwrap()).len(), 1);
     }
 }
