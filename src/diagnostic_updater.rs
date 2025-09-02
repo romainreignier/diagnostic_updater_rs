@@ -1,6 +1,7 @@
 use builtin_interfaces::msg;
 use diagnostic_msgs::msg::DiagnosticArray;
 use rclrs::{Node, Publisher, ToLogParams, QOS_PROFILE_DEFAULT};
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -9,13 +10,18 @@ use std_msgs::msg::Header;
 
 use crate::diagnostic_status_wrapper::DiagnosticStatusWrapper;
 
-struct DiagnosticTask {
+pub trait DiagnosticTask {
+    fn get_name(&self) -> String;
+    fn run(&mut self, stat: &mut DiagnosticStatusWrapper);
+}
+
+pub struct FunctionDiagnosticTask {
     name: String,
     cb: Box<dyn Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync>,
 }
 
-impl DiagnosticTask {
-    fn new<S, F>(name: S, cb: F) -> Self
+impl FunctionDiagnosticTask {
+    pub fn new<S, F>(name: S, cb: F) -> Self
     where
         S: Into<String>,
         F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
@@ -25,19 +31,63 @@ impl DiagnosticTask {
             cb: Box::new(cb),
         }
     }
+}
 
+impl DiagnosticTask for FunctionDiagnosticTask {
     fn get_name(&self) -> String {
         self.name.clone()
     }
 
-    fn run(&self, stat: &mut DiagnosticStatusWrapper) {
+    fn run(&mut self, stat: &mut DiagnosticStatusWrapper) {
         (self.cb)(stat)
+    }
+}
+
+pub struct CompositeDiagnosticTask {
+    name: String,
+    tasks: Vec<Box<dyn DiagnosticTask + Send + Sync>>,
+}
+
+impl CompositeDiagnosticTask {
+    pub fn new<S: Into<String>>(name: S) -> Self {
+        Self {
+            name: name.into(),
+            tasks: Vec::new(),
+        }
+    }
+
+    pub fn add_task<T: DiagnosticTask + 'static + Send + Sync>(&mut self, task: T) {
+        self.tasks.push(Box::new(task));
+    }
+}
+
+impl DiagnosticTask for CompositeDiagnosticTask {
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn run(&mut self, stat: &mut DiagnosticStatusWrapper) {
+        let mut combined_summary = DiagnosticStatusWrapper::default();
+        let mut original_summary = DiagnosticStatusWrapper::default();
+        original_summary.summary_from_status(stat);
+
+        for task in &mut self.tasks {
+            // Put the summary that was passed in.
+            stat.summary_from_status(&original_summary);
+            // Let the next task add entries and put its summary.
+            task.run(stat);
+            // Merge the new summary into the combined summary.
+            combined_summary.merge_summary_from_status(stat);
+        }
+
+        // Copy the combined summary into the output.
+        stat.summary_from_status(&combined_summary);
     }
 }
 
 struct UpdaterPrivate {
     node: Arc<Node>,
-    tasks: Vec<DiagnosticTask>,
+    tasks: Vec<Box<dyn DiagnosticTask + Send + Sync>>,
     publisher: Arc<Publisher<DiagnosticArray>>,
     period: Duration,
     hardware_id: Option<String>,
@@ -64,13 +114,20 @@ impl UpdaterPrivate {
         S: Into<String>,
         F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
     {
-        let task = DiagnosticTask::new(name, cb);
+        let task = FunctionDiagnosticTask::new(name, cb);
+        self.add_task(task)
+    }
+
+    fn add_task<T>(&mut self, task: T)
+    where
+        T: DiagnosticTask + 'static + Send + Sync,
+    {
         self.added_task_callback(&task);
-        self.tasks.push(task);
+        self.tasks.push(Box::new(task));
     }
 
     fn remove_by_name(&mut self, name: &str) -> bool {
-        if let Some(pos) = self.tasks.iter().position(|item| item.name == name) {
+        if let Some(pos) = self.tasks.iter().position(|item| item.get_name() == name) {
             self.tasks.remove(pos);
             true
         } else {
@@ -78,7 +135,10 @@ impl UpdaterPrivate {
         }
     }
 
-    fn added_task_callback(&self, task: &DiagnosticTask) {
+    fn added_task_callback<T>(&self, task: &T)
+    where
+        T: DiagnosticTask + 'static + Send + Sync,
+    {
         let mut status = DiagnosticStatusWrapper::default();
         status.status.name = task.get_name();
         status.summary(0, "Node starting up");
@@ -96,7 +156,7 @@ impl UpdaterPrivate {
         }
 
         let header = Header {
-            frame_id: "map".to_string(),
+            frame_id: String::new(),
             stamp: msg::Time {
                 sec: (self.node.get_clock().now().nsec / 10_i64.pow(9)) as i32,
                 nanosec: (self.node.get_clock().now().nsec % 10_i64.pow(9)) as u32,
@@ -124,7 +184,7 @@ impl UpdaterPrivate {
     fn update(&mut self) {
         let mut warn_nohwid = self.hardware_id.is_none();
         let mut status_vec = Vec::new();
-        for task in self.tasks.iter() {
+        for task in self.tasks.iter_mut() {
             let mut w = DiagnosticStatusWrapper::default();
             w.status.name = task.get_name();
             w.status.level = 2;
@@ -238,8 +298,41 @@ impl Updater {
     }
 
     /// Sets the hardware id string
+    ///
+    /// # Arguments
+    /// * `hwid` - The hardware id string to set.
+    ///
+    /// # Examples
+    /// ```
+    /// use diagnostic_updater_rs::Updater;
+    /// let context = rclrs::Context::new(std::env::args()).unwrap();
+    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut updater = Updater::new(node.clone()).unwrap();
+    /// updater.set_hardware_id("none");
+    /// ```
     pub fn set_hardware_id<S: Into<String>>(&mut self, hwid: S) {
         self.private.lock().unwrap().hardware_id = Some(hwid.into())
+    }
+
+    /// Sets the hardware id string from a format-like list of arguments.
+    /// See the [`set_hardware_id!`] macro for a more convenient way to call this function.
+    ///
+    /// # Arguments
+    /// * `args` - A format-like list of arguments.
+    ///
+    /// # Examples
+    /// ```
+    /// use diagnostic_updater_rs::{set_hardware_id, Updater};
+    /// let context = rclrs::Context::new(std::env::args()).unwrap();
+    /// let node = rclrs::Node::new(&context, "my_node").unwrap();
+    /// let mut updater = Updater::new(node.clone()).unwrap();
+    /// let device_id = 42;
+    /// updater.set_hardware_id_from_args(format_args!("device_{}", device_id));
+    /// // Alternatively, use the macro:
+    /// set_hardware_id!(updater, "device_{}", device_id);
+    /// ```
+    pub fn set_hardware_id_from_args(&mut self, args: fmt::Arguments<'_>) {
+        self.set_hardware_id(format!("{}", args));
     }
 
     /// Adds a closure embodied by a name that will be called to fill a [`DiagnosticStatusWrapper`].
@@ -249,6 +342,10 @@ impl Updater {
         F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
     {
         self.private.lock().unwrap().add(name, cb);
+    }
+
+    pub fn add_task<T: DiagnosticTask + 'static + Send + Sync>(&mut self, task: T) {
+        self.private.lock().unwrap().add_task(task);
     }
 
     /// Outputs a message on all the known DiagnosticStatus.
@@ -290,6 +387,24 @@ impl Updater {
             println!("End of timer thread");
         }));
     }
+}
+
+/// Macro to set the hardware id from a format-like list of arguments.
+///
+/// # Examples
+/// ```
+/// use diagnostic_updater_rs::{set_hardware_id, Updater};
+/// let context = rclrs::Context::new(std::env::args()).unwrap();
+/// let node = rclrs::Node::new(&context, "my_node").unwrap();
+/// let mut updater = Updater::new(node.clone()).unwrap();
+/// let device_id = 42;
+/// set_hardware_id!(updater, "device_{}", device_id);
+/// ```
+#[macro_export]
+macro_rules! set_hardware_id {
+    ($updater:expr, $($arg:tt)*) => {{
+        $updater.set_hardware_id_from_args(format_args!($($arg)*))
+    }}
 }
 
 #[cfg(test)]

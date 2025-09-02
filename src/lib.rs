@@ -9,6 +9,10 @@
 
 mod diagnostic_status_wrapper;
 mod diagnostic_updater;
+mod update_functions;
 
 pub use crate::diagnostic_status_wrapper::DiagnosticStatusWrapper;
-pub use crate::diagnostic_updater::Updater;
+pub use crate::diagnostic_updater::{CompositeDiagnosticTask, FunctionDiagnosticTask, Updater};
+pub use crate::update_functions::{
+    FrequencyStatus, FrequencyStatusParam, TimeStampStatus, TimeStampStatusParam,
+};

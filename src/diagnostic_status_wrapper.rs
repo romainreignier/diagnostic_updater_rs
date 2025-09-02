@@ -50,6 +50,25 @@ impl DiagnosticStatusWrapper {
         self.status.message = format!("{}", args);
     }
 
+    /// Version of [`summary`](DiagnosticStatusWrapper::summary) that copies the level and message from
+    /// another DiagnosticStatusWrapper.
+    ///
+    /// # Examples
+    /////
+    /// ```
+    /// # use diagnostic_updater_rs::DiagnosticStatusWrapper;
+    /// let mut w1 = DiagnosticStatusWrapper::default();
+    /// w1.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "test");
+    ///
+    /// let mut w2 = DiagnosticStatusWrapper::default();
+    /// w2.summary_from_status(&w1);
+    /// assert_eq!(w2.status.level, diagnostic_msgs::msg::DiagnosticStatus::WARN);
+    /// assert_eq!(w2.status.message, "test");
+    /// ```
+    pub fn summary_from_status(&mut self, src: &DiagnosticStatusWrapper) {
+        self.summary(src.status.level, &src.status.message);
+    }
+
     /// Merges a level and message with the existing ones.
     ///
     /// It is sometimes useful to merge two DiagnosticStatus messages. In that
@@ -112,22 +131,17 @@ impl DiagnosticStatusWrapper {
     ////
     /// ```
     /// # use diagnostic_updater_rs::DiagnosticStatusWrapper;
-    /// let mut w = DiagnosticStatusWrapper::default();
-    /// w.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Was ok");
+    /// let mut w1 = DiagnosticStatusWrapper::default();
+    /// w1.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Was ok");
     ///
-    /// let s = diagnostic_msgs::msg::DiagnosticStatus {
-    ///     level: diagnostic_msgs::msg::DiagnosticStatus::ERROR,
-    ///     message: "Error".to_string(),
-    ///     name: "".to_string(),
-    ///     hardware_id: "".to_string(),
-    ///     values: vec![],
-    /// };
-    /// w.merge_summary_from_status(&s);
-    /// assert_eq!(w.status.level, diagnostic_msgs::msg::DiagnosticStatus::ERROR);
-    /// assert_eq!(w.status.message, "Error");
+    /// let mut w2 = DiagnosticStatusWrapper::default();
+    /// w2.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Error");
+    /// w1.merge_summary_from_status(&w2);
+    /// assert_eq!(w2.status.level, diagnostic_msgs::msg::DiagnosticStatus::ERROR);
+    /// assert_eq!(w2.status.message, "Error");
     /// ```
-    pub fn merge_summary_from_status(&mut self, src: &DiagnosticStatus) {
-        self.merge_summary(src.level, &src.message);
+    pub fn merge_summary_from_status(&mut self, src: &DiagnosticStatusWrapper) {
+        self.merge_summary(src.status.level, &src.status.message);
     }
 
     /// Version of [`merge_summary`](DiagnosticStatusWrapper::merge_summary) that merges in the summary from
