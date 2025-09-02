@@ -1,11 +1,15 @@
 use diagnostic_msgs::msg::DiagnosticStatus;
 use diagnostic_updater_rs::{
-    add, summary, CompositeDiagnosticTask, DiagnosticStatusWrapper, FunctionDiagnosticTask, Updater,
+    add, summary, CompositeDiagnosticTask, DiagnosticStatusWrapper, FunctionDiagnosticTask,
+    HeaderlessTopicDiagnostic, Updater,
 };
 use rclrs::{log_error, ToLogParams};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Arc, Mutex,
+};
 
-static TIME_TO_LAUNCH: AtomicI64 = AtomicI64::new(0);
+static TIME_TO_LAUNCH: AtomicI64 = AtomicI64::new(11);
 
 fn main() {
     let context = rclrs::Context::new(std::env::args()).unwrap();
@@ -43,16 +47,22 @@ fn main() {
     // DiagnosticTask trait that can be used to create a DiagnosticTask from
     // a function. This will be useful when combining multiple diagnostic
     // tasks using a CompositeDiagnosticTask.
-    let lower = FunctionDiagnosticTask::new("Lower-bound check", check_lower_bound);
-    let upper = FunctionDiagnosticTask::new("Upper-bound check", check_upper_bound);
+    let lower = Arc::new(Mutex::new(FunctionDiagnosticTask::new(
+        "Lower-bound check",
+        check_lower_bound,
+    )));
+    let upper = Arc::new(Mutex::new(FunctionDiagnosticTask::new(
+        "Upper-bound check",
+        check_upper_bound,
+    )));
 
     // If you want to merge the outputs of two diagnostic tasks together, you
     // can create a CompositeDiagnosticTask, also a derived class from
     // DiagnosticTask. For example, we could combine the upper and lower
     // bounds check into a single DiagnosticTask.
-    let mut bounds = CompositeDiagnosticTask::new("Bound check");
-    bounds.add_task(lower);
-    bounds.add_task(upper);
+    let bounds = Arc::new(Mutex::new(CompositeDiagnosticTask::new("Bound check")));
+    bounds.lock().unwrap().add_task(lower.clone());
+    bounds.lock().unwrap().add_task(upper);
 
     // We can then add the CompositeDiagnosticTask to our Updater. When it is
     // run, the overall name will be the name of the composite task, i.e.,
@@ -88,18 +98,18 @@ fn main() {
     // are changed, the FrequencyStatus/TimestampStatus will start operating
     // with the new values.
     //
-    // Refer to diagnostic_updater_rs::FrequencyStatusParam and
-    // diagnostic_updater_rs::TimestampStatusParam documentation for details on
-    // what the parameters mean:
-    let min_freq = 0.5; // If you update these values, the
-    let max_freq = 2.0; // HeaderlessTopicDiagnostic will use the new values.
-                        // let pub1_freq = diagnostic_updater_rs::HeaderlessTopicDiagnostic::new(
-                        //     "topic1",
-                        //     updater,
-                        //     diagnostic_updater_rs::FrequencyStatusParam::new(&min_freq, &max_freq)
-                        //         .with_tolerance(0.1)
-                        //         .with_window_size(10),
-                        // );
+    // Refer to FrequencyStatusParam and TimestampStatusParam documentation for
+    // details on what the parameters mean:
+    let min_freq = Arc::new(Mutex::new(0.5)); // If you update these values, the
+    let max_freq = Arc::new(Mutex::new(2.0)); // HeaderlessTopicDiagnostic will use the new values.
+    let mut pub1_freq = HeaderlessTopicDiagnostic::new(
+        "topic1",
+        &mut updater,
+        diagnostic_updater_rs::FrequencyStatusParam::new(min_freq, max_freq)
+            .with_tolerance(0.1)
+            .with_window_size(10),
+    )
+    .unwrap();
 
     // Note that TopicDiagnostic, HeaderlessDiagnosedPublisher,
     // HeaderlessDiagnosedPublisher and DiagnosedPublisher all descend from
@@ -108,7 +118,7 @@ fn main() {
     //
     // Each time pub1_freq is updated, lower will also get updated and its
     // output will be merged with the output from pub1_freq.
-    // pub1_freq.add_task(&lower); // (This wouldn't work if lower was stateful).
+    // pub1_freq.add_task(lower); // (This wouldn't work if lower was stateful).
 
     // If we know that the state of the node just changed, we can force an
     // immediate update.
@@ -129,9 +139,14 @@ fn main() {
         // the statistics up to date.
         msg.data = false;
         pub1.publish(msg).unwrap();
-        //pub1_freq.tick();
+        pub1_freq.tick();
 
-        // TODO spin?
+        // Update TIME_TO_LAUNCH
+        let time_to_launch = TIME_TO_LAUNCH.fetch_add(-1, Ordering::SeqCst);
+        if time_to_launch < 0 {
+            TIME_TO_LAUNCH.store(11, Ordering::SeqCst);
+        }
+
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }

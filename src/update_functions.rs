@@ -1,16 +1,18 @@
+use rclrs::{log_debug, RclrsError, Time, ToLogParams};
+use std::sync::{Arc, Mutex};
+
 use crate::diagnostic_status_wrapper::DiagnosticStatusWrapper;
 use crate::diagnostic_updater::DiagnosticTask;
-use rclrs::{RclrsError, Time};
 
-pub struct FrequencyStatusParam<'a> {
-    min_freq: &'a f64,
-    max_freq: &'a f64,
+pub struct FrequencyStatusParam {
+    min_freq: Arc<Mutex<f64>>,
+    max_freq: Arc<Mutex<f64>>,
     tolerance: f64,
     window_size: usize,
 }
 
-impl FrequencyStatusParam<'_> {
-    pub fn new<'a>(min_freq: &'a f64, max_freq: &'a f64) -> FrequencyStatusParam<'a> {
+impl FrequencyStatusParam {
+    pub fn new(min_freq: Arc<Mutex<f64>>, max_freq: Arc<Mutex<f64>>) -> FrequencyStatusParam {
         FrequencyStatusParam {
             min_freq,
             max_freq,
@@ -40,9 +42,9 @@ fn secs_to_nanos(secs: f64) -> i64 {
 
 // TODO implement thread safety
 // Maybe with internal struct protected by Mutex
-pub struct FrequencyStatus<'a> {
+pub struct FrequencyStatus {
     name: String,
-    params: FrequencyStatusParam<'a>,
+    params: FrequencyStatusParam,
     count: usize,
     times: Vec<rclrs::Time>,
     seq_nums: Vec<usize>,
@@ -51,16 +53,16 @@ pub struct FrequencyStatus<'a> {
     clock: rclrs::Clock,
 }
 
-impl<'a> FrequencyStatus<'a> {
-    pub fn new(params: FrequencyStatusParam<'a>) -> Result<Self, RclrsError> {
+impl<'a> FrequencyStatus {
+    pub fn new(params: FrequencyStatusParam) -> Result<Self, RclrsError> {
         Self::with_name(params, "Frequency Status")
     }
 
-    pub fn with_name<S>(params: FrequencyStatusParam<'a>, name: S) -> Result<Self, RclrsError>
+    pub fn with_name<S>(params: FrequencyStatusParam, name: S) -> Result<Self, RclrsError>
     where
         S: Into<String>,
     {
-        let logger = rclrs::Logger::new("FrequencyStatus_debug_logger")?;
+        let debug_logger = rclrs::Logger::new("FrequencyStatus_debug_logger")?;
         let clock = rclrs::Clock::system();
         let current_time = clock.now();
         let window_size = params.window_size;
@@ -71,7 +73,7 @@ impl<'a> FrequencyStatus<'a> {
             times: vec![current_time; window_size],
             seq_nums: vec![0; window_size],
             hist_index: 0,
-            debug_logger: logger,
+            debug_logger,
             clock,
         })
     }
@@ -95,11 +97,12 @@ impl<'a> FrequencyStatus<'a> {
     }
 
     pub fn tick(&mut self) {
+        log_debug!(&self.debug_logger, "TICK {}", self.count);
         self.count += 1;
     }
 }
 
-impl DiagnosticTask for FrequencyStatus<'_> {
+impl DiagnosticTask for FrequencyStatus {
     fn get_name(&self) -> String {
         self.name.clone()
     }
@@ -115,11 +118,13 @@ impl DiagnosticTask for FrequencyStatus<'_> {
         self.times[self.hist_index] = curtime;
         self.hist_index = (self.hist_index + 1) % self.params.window_size;
 
+        let min_freq = *self.params.min_freq.lock().unwrap();
+        let max_freq = *self.params.max_freq.lock().unwrap();
         if events == 0 {
             stat.summary(2, "No events recorded.");
-        } else if freq < *self.params.min_freq * (1.0 - self.params.tolerance) {
+        } else if freq < min_freq * (1.0 - self.params.tolerance) {
             stat.summary(1, "Frequency too low.");
-        } else if freq > *self.params.max_freq * (1.0 + self.params.tolerance) {
+        } else if freq > max_freq * (1.0 + self.params.tolerance) {
             stat.summary(1, "Frequency too high.");
         } else {
             stat.summary(0, "Desired frequency met");
@@ -129,19 +134,19 @@ impl DiagnosticTask for FrequencyStatus<'_> {
         stat.add("Events since startup", self.count);
         stat.add("Duration of window (s)", window);
         stat.add("Actual frequency (Hz)", freq);
-        if *self.params.min_freq == *self.params.max_freq {
-            stat.add("Target frequency (Hz)", *self.params.min_freq);
+        if min_freq == max_freq {
+            stat.add("Target frequency (Hz)", min_freq);
         }
-        if *self.params.min_freq > 0.0 {
+        if min_freq > 0.0 {
             stat.add(
                 "Minimum acceptable frequency (Hz)",
-                *self.params.min_freq * (1.0 - self.params.tolerance),
+                min_freq * (1.0 - self.params.tolerance),
             );
         }
-        if self.params.max_freq.is_finite() {
+        if max_freq.is_finite() {
             stat.add(
                 "Maximum acceptable frequency (Hz)",
-                *self.params.max_freq * (1.0 + self.params.tolerance),
+                max_freq * (1.0 + self.params.tolerance),
             );
         }
     }
@@ -295,10 +300,10 @@ mod tests {
     #[test]
     fn test_frequency_status() {
         // From C++ test case
-        let min_freq = 10.0;
-        let max_freq = 20.0;
+        let min_freq = Arc::new(Mutex::new(10.0));
+        let max_freq = Arc::new(Mutex::new(20.0));
 
-        let params = FrequencyStatusParam::new(&min_freq, &max_freq)
+        let params = FrequencyStatusParam::new(min_freq, max_freq)
             .with_tolerance(0.5)
             .with_window_size(2);
         let mut freq_status = FrequencyStatus::new(params).unwrap();

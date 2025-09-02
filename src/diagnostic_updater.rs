@@ -45,7 +45,7 @@ impl DiagnosticTask for FunctionDiagnosticTask {
 
 pub struct CompositeDiagnosticTask {
     name: String,
-    tasks: Vec<Box<dyn DiagnosticTask + Send + Sync>>,
+    tasks: Vec<Arc<Mutex<dyn DiagnosticTask + Send + Sync>>>,
 }
 
 impl CompositeDiagnosticTask {
@@ -56,8 +56,11 @@ impl CompositeDiagnosticTask {
         }
     }
 
-    pub fn add_task<T: DiagnosticTask + 'static + Send + Sync>(&mut self, task: T) {
-        self.tasks.push(Box::new(task));
+    pub fn add_task<T>(&mut self, task: Arc<Mutex<T>>)
+    where
+        T: DiagnosticTask + 'static + Send + Sync,
+    {
+        self.tasks.push(task);
     }
 }
 
@@ -75,7 +78,7 @@ impl DiagnosticTask for CompositeDiagnosticTask {
             // Put the summary that was passed in.
             stat.summary_from_status(&original_summary);
             // Let the next task add entries and put its summary.
-            task.run(stat);
+            task.lock().unwrap().run(stat);
             // Merge the new summary into the combined summary.
             combined_summary.merge_summary_from_status(stat);
         }
@@ -85,9 +88,40 @@ impl DiagnosticTask for CompositeDiagnosticTask {
     }
 }
 
+type TaskFunction = dyn FnMut(&mut DiagnosticStatusWrapper) + 'static + Send + Sync;
+
+struct DiagnosticTaskInternal {
+    name: String,
+    func: Arc<Mutex<TaskFunction>>,
+}
+
+impl DiagnosticTaskInternal {
+    fn new<S, F>(name: S, func: Arc<Mutex<F>>) -> Self
+    where
+        S: Into<String>,
+        F: FnMut(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
+    {
+        Self {
+            name: name.into(),
+            func,
+        }
+    }
+}
+
+impl DiagnosticTask for DiagnosticTaskInternal {
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn run(&mut self, stat: &mut DiagnosticStatusWrapper) {
+        stat.status.name = self.name.clone();
+        (self.func.lock().unwrap())(stat)
+    }
+}
+
 struct UpdaterPrivate {
     node: Arc<Node>,
-    tasks: Vec<Box<dyn DiagnosticTask + Send + Sync>>,
+    tasks: Vec<DiagnosticTaskInternal>,
     publisher: Arc<Publisher<DiagnosticArray>>,
     period: Duration,
     hardware_id: Option<String>,
@@ -112,18 +146,28 @@ impl UpdaterPrivate {
     fn add<S, F>(&mut self, name: S, cb: F)
     where
         S: Into<String>,
-        F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
+        F: FnMut(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
     {
-        let task = FunctionDiagnosticTask::new(name, cb);
-        self.add_task(task)
+        let int_task = DiagnosticTaskInternal::new(name, Arc::new(Mutex::new(cb)));
+        self.add_internal(int_task)
     }
 
-    fn add_task<T>(&mut self, task: T)
+    fn add_internal(&mut self, task: DiagnosticTaskInternal) {
+        self.tasks.push(task);
+        self.added_task_callback(&self.tasks.last().unwrap());
+    }
+
+    fn add_task<T>(&mut self, task: Arc<Mutex<T>>)
     where
         T: DiagnosticTask + 'static + Send + Sync,
     {
-        self.added_task_callback(&task);
-        self.tasks.push(Box::new(task));
+        let task_closure = task.clone();
+        self.add(
+            task.lock().unwrap().get_name(),
+            move |stat: &mut DiagnosticStatusWrapper| {
+                task_closure.lock().unwrap().run(stat);
+            },
+        );
     }
 
     fn remove_by_name(&mut self, name: &str) -> bool {
@@ -135,10 +179,7 @@ impl UpdaterPrivate {
         }
     }
 
-    fn added_task_callback<T>(&self, task: &T)
-    where
-        T: DiagnosticTask + 'static + Send + Sync,
-    {
+    fn added_task_callback(&self, task: &DiagnosticTaskInternal) {
         let mut status = DiagnosticStatusWrapper::default();
         status.status.name = task.get_name();
         status.summary(0, "Node starting up");
@@ -339,12 +380,15 @@ impl Updater {
     pub fn add<S, F>(&mut self, name: S, cb: F)
     where
         S: Into<String>,
-        F: Fn(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
+        F: FnMut(&mut DiagnosticStatusWrapper) + 'static + Send + Sync,
     {
         self.private.lock().unwrap().add(name, cb);
     }
 
-    pub fn add_task<T: DiagnosticTask + 'static + Send + Sync>(&mut self, task: T) {
+    pub fn add_task<T>(&mut self, task: Arc<Mutex<T>>)
+    where
+        T: DiagnosticTask + 'static + Send + Sync,
+    {
         self.private.lock().unwrap().add_task(task);
     }
 
