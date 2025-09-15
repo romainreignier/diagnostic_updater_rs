@@ -273,13 +273,14 @@ impl Updater {
     /// ```
     /// use diagnostic_msgs::msg::DiagnosticStatus;
     /// use diagnostic_updater_rs::Updater;
+    /// use rclrs::*;
     /// use std::time::Duration;
     ///
-    /// let mut executor = Context::default().create_basic_executor();
+    /// let executor = Context::default().create_basic_executor();
     /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// updater.set_hardware_id("none");
-    /// updater.add("connection", |mut stat| {
+    /// updater.add("connection", |stat: &mut diagnostic_updater_rs::DiagnosticStatusWrapper| {
     ///     stat.summary(DiagnosticStatus::OK, "");
     /// });
     /// ```
@@ -305,13 +306,14 @@ impl Updater {
     /// ```
     /// use diagnostic_msgs::msg::DiagnosticStatus;
     /// use diagnostic_updater_rs::Updater;
+    /// use rclrs::*;
     /// use std::time::Duration;
     ///
-    /// let mut executor = Context::default().create_basic_executor();
+    /// let executor = Context::default().create_basic_executor();
     /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::with_period(node.clone(), Duration::from_secs(1));
     /// updater.set_hardware_id("none");
-    /// updater.add("connection", |mut stat| {
+    /// updater.add("connection", |stat: &mut diagnostic_updater_rs::DiagnosticStatusWrapper| {
     ///     stat.summary(DiagnosticStatus::OK, "");
     /// });
     /// ```
@@ -344,7 +346,8 @@ impl Updater {
     /// # Examples
     /// ```
     /// use diagnostic_updater_rs::Updater;
-    /// let mut executor = Context::default().create_basic_executor();
+    /// use rclrs::*;
+    /// let executor = Context::default().create_basic_executor();
     /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// updater.set_hardware_id("none");
@@ -362,7 +365,8 @@ impl Updater {
     /// # Examples
     /// ```
     /// use diagnostic_updater_rs::{set_hardware_id, Updater};
-    /// let mut executor = Context::default().create_basic_executor();
+    /// use rclrs::*;
+    /// let executor = Context::default().create_basic_executor();
     /// let node = executor.create_node("my_node").unwrap();
     /// let mut updater = Updater::new(node.clone()).unwrap();
     /// let device_id = 42;
@@ -436,7 +440,8 @@ impl Updater {
 /// # Examples
 /// ```
 /// use diagnostic_updater_rs::{set_hardware_id, Updater};
-/// let mut executor = Context::default().create_basic_executor();
+/// use rclrs::*;
+/// let executor = Context::default().create_basic_executor();
 /// let node = executor.create_node("my_node").unwrap();
 /// let mut updater = Updater::new(node.clone()).unwrap();
 /// let device_id = 42;

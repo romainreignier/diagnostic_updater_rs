@@ -1,19 +1,29 @@
-use diagnostic_msgs::msg::DiagnosticStatus;
+use diagnostic_msgs::msg::{DiagnosticArray, DiagnosticStatus};
 use diagnostic_updater_rs::{
-    add, summary, CompositeDiagnosticTask, DiagnosticStatusWrapper, FunctionDiagnosticTask,
-    HeaderlessTopicDiagnostic, Updater,
+    add, summary, CompositeDiagnosticTask, DiagnosedPublisher, DiagnosticStatusWrapper,
+    FrequencyStatusParam, FunctionDiagnosticTask, HasHeader, HeaderlessTopicDiagnostic,
+    TimeStampStatusParam, Updater,
 };
-use rclrs::{log_error, ToLogParams};
+use rclrs::*;
 use std::sync::{
     atomic::{AtomicI64, Ordering},
     Arc, Mutex,
 };
 
+// Just demonstrating that `HasHeader` is the trait used to plug a message
+// type into `DiagnosedPublisher`. The library already provides this impl for
+// `DiagnosticArray`, so downstream code only needs an `impl HasHeader for ...`
+// of its own when wrapping other message types (e.g. sensor_msgs::msg::Image).
+#[allow(dead_code)]
+fn _has_header_assertion(msg: &DiagnosticArray) -> &std_msgs::msg::Header {
+    <DiagnosticArray as HasHeader>::header(msg)
+}
+
 static TIME_TO_LAUNCH: AtomicI64 = AtomicI64::new(11);
 
 fn main() {
-    let context = rclrs::Context::new(std::env::args()).unwrap();
-    let node = rclrs::Node::new(&context, "diagnostic_updater_example").unwrap();
+    let executor = Context::default().create_basic_executor();
+    let node = executor.create_node("diagnostic_updater_example").unwrap();
 
     // The Updater class advertises to /diagnostics, and has a
     // ~diagnostic_period parameter that says how often the diagnostics
@@ -77,10 +87,13 @@ fn main() {
     updater.broadcast(0, "Doing important initialization stuff.");
 
     let pub1 = node
-        .create_publisher::<std_msgs::msg::Bool>(
-            "topic1",
-            rclrs::QoSProfile::default().keep_last(10),
-        )
+        .create_publisher::<std_msgs::msg::Bool>("topic1".keep_last(10))
+        .unwrap();
+
+    // A second publisher whose message carries a std_msgs::msg::Header so we
+    // can demonstrate DiagnosedPublisher (FrequencyStatus + TimeStampStatus).
+    let pub2 = node
+        .create_publisher::<DiagnosticArray>("topic2".keep_last(10))
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -103,11 +116,26 @@ fn main() {
     let min_freq = Arc::new(Mutex::new(0.5)); // If you update these values, the
     let max_freq = Arc::new(Mutex::new(2.0)); // HeaderlessTopicDiagnostic will use the new values.
     let mut pub1_freq = HeaderlessTopicDiagnostic::new(
-        "topic1",
+        "/topic1",
         &mut updater,
-        diagnostic_updater_rs::FrequencyStatusParam::new(min_freq, max_freq)
+        FrequencyStatusParam::new(min_freq.clone(), max_freq.clone())
             .with_tolerance(0.1)
             .with_window_size(10),
+    )
+    .unwrap();
+
+    // DiagnosedPublisher bundles a publisher with FrequencyStatus and
+    // TimeStampStatus. Each publish(&msg) records both ticks; the stamp comes
+    // from msg.header().stamp via the HasHeader impl.
+    let mut pub2_diag = DiagnosedPublisher::new(
+        pub2,
+        &mut updater,
+        FrequencyStatusParam::new(min_freq, max_freq)
+            .with_tolerance(0.1)
+            .with_window_size(10),
+        TimeStampStatusParam::new()
+            .with_min_acceptable(-1.0)
+            .with_max_acceptable(5.0),
     )
     .unwrap();
 
@@ -118,7 +146,7 @@ fn main() {
     //
     // Each time pub1_freq is updated, lower will also get updated and its
     // output will be merged with the output from pub1_freq.
-    // pub1_freq.add_task(lower); // (This wouldn't work if lower was stateful).
+    pub1_freq.add_task(lower); // (This wouldn't work if lower was stateful).
 
     // If we know that the state of the node just changed, we can force an
     // immediate update.
@@ -132,7 +160,9 @@ fn main() {
         );
     }
 
-    while context.ok() {
+    let clock = node.get_clock();
+
+    while executor.commands().context().ok() {
         let mut msg = std_msgs::msg::Bool::default();
 
         // Calls to pub1 have to be accompanied by calls to pub1_freq to keep
@@ -140,6 +170,17 @@ fn main() {
         msg.data = false;
         pub1.publish(msg).unwrap();
         pub1_freq.tick();
+
+        // pub2_diag.publish handles both publishing and recording the
+        // frequency + timestamp diagnostics in one call. The stamp is read
+        // from msg.header.stamp via the HasHeader impl above.
+        let now = clock.now();
+        let mut diag_msg = DiagnosticArray::default();
+        diag_msg.header.stamp = builtin_interfaces::msg::Time {
+            sec: (now.nsec / 1_000_000_000) as i32,
+            nanosec: (now.nsec % 1_000_000_000) as u32,
+        };
+        pub2_diag.publish(&diag_msg).unwrap();
 
         // Update TIME_TO_LAUNCH
         let time_to_launch = TIME_TO_LAUNCH.fetch_add(-1, Ordering::SeqCst);

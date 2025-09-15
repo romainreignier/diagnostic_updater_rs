@@ -10,6 +10,7 @@ edition = "2021"
 builtin_interfaces = "*"
 diagnostic_msgs = "*"
 rclrs = "*"
+rosidl_runtime_rs = "*"
 std_msgs = "*"
 
 [dev-dependencies]
