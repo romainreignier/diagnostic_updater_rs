@@ -40,8 +40,6 @@ fn secs_to_nanos(secs: f64) -> i64 {
     (secs * 1e9) as i64
 }
 
-// TODO implement thread safety
-// Maybe with internal struct protected by Mutex
 pub struct FrequencyStatus {
     name: String,
     params: FrequencyStatusParam,
