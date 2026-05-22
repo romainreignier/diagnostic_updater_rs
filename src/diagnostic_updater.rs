@@ -254,6 +254,13 @@ pub struct Updater {
     private: Arc<Mutex<UpdaterPrivate>>,
     timer_thread: Option<JoinHandle<()>>,
     timer_running: Arc<AtomicBool>,
+    /// Owns the rclrs parameter handles for the auto-discovery
+    /// parameters declared by [`Updater::declare_aggregator_params`].
+    /// Kept inside the updater because in rclrs 0.7
+    /// `MandatoryParameter` / `OptionalParameter` undeclare the
+    /// parameter on `Drop`, so the handle must outlive every consumer
+    /// of the parameter service.
+    _aggregator_handles: Vec<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Updater {
@@ -322,9 +329,49 @@ impl Updater {
             private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
             timer_thread: None,
             timer_running: Arc::new(AtomicBool::new(false)),
+            _aggregator_handles: Vec::new(),
         };
         s.reset_timer();
         s
+    }
+
+    /// Declares the parameters used by `p_diagnostics_aggregator` to
+    /// auto-discover this node via its parameter service:
+    ///
+    /// - `add_auto_diagnostics_path` (`string`, default `""`): the
+    ///   path at which the node should be inserted in the aggregator
+    ///   tree. Typically set via a launch file `<param>` override.
+    ///   An empty value means the node is not registered.
+    /// - `add_auto_diagnostics_stale_timeout` (`f64`, default `5.0`):
+    ///   number of seconds without a `/diagnostics` message before
+    ///   the aggregator marks this node stale.
+    ///
+    /// The parameter handles are retained by the updater so the
+    /// declarations stay visible on the parameter service (rclrs 0.7
+    /// undeclares parameters when their handle is dropped).
+    ///
+    /// # Examples
+    /// ```
+    /// use diagnostic_updater_rs::Updater;
+    /// use rclrs::*;
+    /// let executor = Context::default().create_basic_executor();
+    /// let node = executor.create_node("my_node").unwrap();
+    /// let mut updater = Updater::new(node.clone()).unwrap();
+    /// updater.declare_aggregator_params().unwrap();
+    /// ```
+    pub fn declare_aggregator_params(&mut self) -> Result<(), rclrs::DeclarationError> {
+        let node = self.private.lock().unwrap().node.clone();
+        let path = node
+            .declare_parameter::<Arc<str>>("add_auto_diagnostics_path")
+            .default(Arc::from(""))
+            .mandatory()?;
+        let stale_timeout = node
+            .declare_parameter::<f64>("add_auto_diagnostics_stale_timeout")
+            .default(5.0)
+            .mandatory()?;
+        self._aggregator_handles.push(Box::new(path));
+        self._aggregator_handles.push(Box::new(stale_timeout));
+        Ok(())
     }
 
     /// Returns the interval between updates.
