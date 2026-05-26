@@ -121,6 +121,7 @@ impl DiagnosticTask for DiagnosticTaskInternal {
 
 struct UpdaterPrivate {
     node: Node,
+    node_name: String,
     tasks: Vec<DiagnosticTaskInternal>,
     publisher: Publisher<DiagnosticArray>,
     period: Duration,
@@ -129,10 +130,11 @@ struct UpdaterPrivate {
 }
 
 impl UpdaterPrivate {
-    fn new(node: Node, period: Duration) -> Self {
+    fn new(node: Node, period: Duration, node_name: String) -> Self {
         let publisher = node.create_publisher("/diagnostics".keep_last(1)).unwrap();
         Self {
             node,
+            node_name,
             period,
             hardware_id: None,
             publisher,
@@ -191,7 +193,7 @@ impl UpdaterPrivate {
 
     fn publish(&self, mut status_vec: Vec<DiagnosticStatusWrapper>) {
         for s in &mut status_vec {
-            s.status.name = format!("{}: {}", self.node.name(), s.status.name);
+            s.status.name = format!("{}: {}", self.node_name, s.status.name);
         }
 
         let header = Header {
@@ -297,7 +299,16 @@ impl Updater {
             .default(1.0)
             .mandatory()?;
         let period = Duration::from_secs_f64(period.get());
-        Ok(Self::with_period(node, period))
+        let use_fqn = node
+            .declare_parameter("diagnostic_updater.use_fqn")
+            .default(false)
+            .mandatory()?;
+        let node_name = if use_fqn.get() {
+            node.fully_qualified_name()
+        } else {
+            node.name()
+        };
+        Ok(Self::with_period_internal(node, period, node_name))
     }
 
     /// Creates an [Updater] object with a specified period.
@@ -325,8 +336,13 @@ impl Updater {
     /// });
     /// ```
     pub fn with_period(node: Node, period: Duration) -> Self {
+        let node_name = node.name();
+        Self::with_period_internal(node, period, node_name)
+    }
+
+    fn with_period_internal(node: Node, period: Duration, node_name: String) -> Self {
         let mut s = Self {
-            private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period))),
+            private: Arc::new(Mutex::new(UpdaterPrivate::new(node, period, node_name))),
             timer_thread: None,
             timer_running: Arc::new(AtomicBool::new(false)),
             _aggregator_handles: Vec::new(),
@@ -538,6 +554,101 @@ mod tests {
         let node = executor.create_node("diagnosed_node").unwrap();
         let updater = Updater::with_period(node, Duration::from_secs(2));
         assert_eq!(updater.get_period(), Duration::from_secs(2));
+    }
+
+    #[test]
+    #[serial]
+    fn status_name_uses_short_node_name_by_default() {
+        let mut executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
+
+        let msgs = Arc::new(Mutex::new(Vec::new()));
+        let msgs_cb = msgs.clone();
+        let _subscriber = node
+            .create_subscription("/diagnostics", move |msg: DiagnosticArray| {
+                msgs_cb.lock().unwrap().push(msg);
+            })
+            .unwrap();
+
+        let mut updater = Updater::new(node.clone()).unwrap();
+        updater.add("test", |stat: &mut DiagnosticStatusWrapper| {
+            stat.summary(0, "ok");
+        });
+        updater.force_update();
+        // Drain pending subscription callbacks.
+        for _ in 0..10 {
+            executor.spin(SpinOptions::spin_once());
+            if msgs.lock().unwrap().iter().any(|m| {
+                m.status
+                    .iter()
+                    .any(|s| s.name == "diagnosed_node: test" && s.message == "ok")
+            }) {
+                break;
+            }
+        }
+
+        let msgs = msgs.lock().unwrap();
+        assert!(
+            msgs.iter().any(|m| {
+                m.status
+                    .iter()
+                    .any(|s| s.name == "diagnosed_node: test" && s.message == "ok")
+            }),
+            "expected a status named 'diagnosed_node: test', got: {:?}",
+            msgs.iter()
+                .flat_map(|m| m.status.iter().map(|s| s.name.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn status_name_uses_fqn_when_parameter_is_set() {
+        let mut executor = Context::default().create_basic_executor();
+        let node = executor.create_node("diagnosed_node").unwrap();
+
+        // Enable the FQN prefix before constructing the Updater.
+        node.use_undeclared_parameters()
+            .set("diagnostic_updater.use_fqn", true)
+            .unwrap();
+
+        let msgs = Arc::new(Mutex::new(Vec::new()));
+        let msgs_cb = msgs.clone();
+        let _subscriber = node
+            .create_subscription("/diagnostics", move |msg: DiagnosticArray| {
+                msgs_cb.lock().unwrap().push(msg);
+            })
+            .unwrap();
+
+        let mut updater = Updater::new(node.clone()).unwrap();
+        updater.add("test", |stat: &mut DiagnosticStatusWrapper| {
+            stat.summary(0, "ok");
+        });
+        updater.force_update();
+        // Drain pending subscription callbacks.
+        for _ in 0..10 {
+            executor.spin(SpinOptions::spin_once());
+            if msgs.lock().unwrap().iter().any(|m| {
+                m.status
+                    .iter()
+                    .any(|s| s.name == "/diagnosed_node: test" && s.message == "ok")
+            }) {
+                break;
+            }
+        }
+
+        let msgs = msgs.lock().unwrap();
+        assert!(
+            msgs.iter().any(|m| {
+                m.status
+                    .iter()
+                    .any(|s| s.name == "/diagnosed_node: test" && s.message == "ok")
+            }),
+            "expected a status named '/diagnosed_node: test', got: {:?}",
+            msgs.iter()
+                .flat_map(|m| m.status.iter().map(|s| s.name.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
